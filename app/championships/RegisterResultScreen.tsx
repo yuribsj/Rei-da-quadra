@@ -52,7 +52,7 @@ function deriveOutcome(sets: SetScore[]): { outcome: MatchOutcome; scoreStr: str
 }
 
 export default function RegisterResultScreen({ navigation, route }: Props) {
-  const { matchId, championshipId, pair1Names, pair2Names, pair1Nicknames, pair2Nicknames, pair1Avatars, pair2Avatars, existingResultId, existingSets } = route.params;
+  const { matchId, championshipId, pair1Names, pair2Names, pair1Nicknames, pair2Nicknames, pair1Avatars, pair2Avatars, existingResultId, existingSets, isAdmin } = route.params;
   const { user } = useAuth();
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -104,9 +104,15 @@ export default function RegisterResultScreen({ navigation, route }: Props) {
     let dbError: any = null;
 
     if (isEditing) {
+      const updatePayload: Record<string, any> = { outcome, score: scoreStr, sets: setsData };
+      if (!isAdmin) {
+        updatePayload.status = 'pending';
+        updatePayload.confirmed_by = null;
+        updatePayload.confirmed_at = null;
+      }
       const { error: e } = await supabase
         .from('results')
-        .update({ outcome, score: scoreStr, sets: setsData })
+        .update(updatePayload)
         .eq('id', existingResultId);
       dbError = e;
     } else {
@@ -117,6 +123,7 @@ export default function RegisterResultScreen({ navigation, route }: Props) {
         score:           scoreStr,
         sets:            setsData,
         registered_by:   user!.id,
+        ...(isAdmin ? { status: 'confirmed', confirmed_by: user!.id, confirmed_at: new Date().toISOString() } : {}),
       });
       dbError = e;
     }

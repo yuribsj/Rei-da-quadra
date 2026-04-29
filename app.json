@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Rei da Quadra",
-    "slug": "rei-da-quadra",
+    "slug": "reidaquadra",
     "scheme": "reidaquadra",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -14,7 +14,8 @@
       "backgroundColor": "#000000"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yuribsj.reidaquadra"
     },
     "android": {
       "adaptiveIcon": {
@@ -29,6 +30,12 @@
     },
     "plugins": [
       "expo-font"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "7c786311-91e6-4ba5-9049-b278eeecbe8b"
+      }
+    },
+    "owner": "yuribsj"
   }
 }

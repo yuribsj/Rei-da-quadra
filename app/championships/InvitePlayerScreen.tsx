@@ -80,10 +80,12 @@ export default function InvitePlayerScreen({ navigation, route }: Props) {
 
   const search = async (q: string) => {
     setSearching(true);
+    const safe = q.replace(/[,.*()\\]/g, '');
+    if (!safe) { setResults([]); setSearching(false); return; }
     const { data } = await supabase
       .from('users')
       .select('id, name, nickname, phone, avatar_url, created_at')
-      .or(`name.ilike.%${q}%,nickname.ilike.%${q}%,phone.ilike.%${q}%`)
+      .or(`name.ilike.%${safe}%,nickname.ilike.%${safe}%,phone.ilike.%${safe}%`)
       .neq('id', user!.id)
       .limit(20);
 

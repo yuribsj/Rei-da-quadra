@@ -54,6 +54,7 @@ export function computeRanking(
   for (const match of matches) {
     const result = Array.isArray(match.results) ? match.results[0] : match.results;
     if (!result) continue;
+    if (result.status !== 'confirmed') continue;
 
     const { outcome } = result;
     const pts = POINTS[outcome];

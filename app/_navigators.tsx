@@ -33,7 +33,7 @@ export type HomeStackParamList = {
   EditChampionship:     { id: string; currentName: string };
   InvitePlayer:         { championshipId: string; championshipName: string; existingMemberIds: string[] };
   JoinChampionship:     undefined;
-  RegisterResult:       { matchId: string; championshipId: string; pair1Names: [string, string]; pair2Names: [string, string]; pair1Nicknames?: [string | null, string | null]; pair2Nicknames?: [string | null, string | null]; pair1Avatars?: [string | null, string | null]; pair2Avatars?: [string | null, string | null]; existingResultId?: string; existingSets?: [number, number][] };
+  RegisterResult:       { matchId: string; championshipId: string; pair1Names: [string, string]; pair2Names: [string, string]; pair1Nicknames?: [string | null, string | null]; pair2Nicknames?: [string | null, string | null]; pair1Avatars?: [string | null, string | null]; pair2Avatars?: [string | null, string | null]; existingResultId?: string; existingSets?: [number, number][]; isAdmin?: boolean };
   MatchDetail:          { matchId: string; championshipId: string };
   ChampionReveal:       { championshipId: string; championshipName: string };
 };

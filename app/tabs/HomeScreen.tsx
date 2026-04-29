@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { supabase } from '../../lib/supabase';
-import { Championship, Match, Membership, UserProfile } from '../../lib/types';
+import { Championship, Membership, Result } from '../../lib/types';
 import Avatar from '../../components/Avatar';
 import { radius, spacing, ThemeColors } from '../../constants/theme';
 import { HomeStackParamList } from '../_navigators';
@@ -27,17 +27,17 @@ interface PendingInvite extends Membership {
   championships: Championship;
 }
 
-interface QuickStats {
-  winRate:         number;
-  matchesPlayed:   number;
-  championships:   number;
-}
-
-interface NextMatchInfo {
-  match:            Match;
+interface PendingConfirmation {
+  matchId:          string;
+  resultId:         string;
   championshipId:   string;
   championshipName: string;
-  players:          Map<string, UserProfile>;
+  score:            string | null;
+  outcome:          string;
+  registeredByName: string;
+  pair1: { name: string; nickname: string | null; avatarUrl: string | null }[];
+  pair2: { name: string; nickname: string | null; avatarUrl: string | null }[];
+  isSingles:        boolean;
 }
 
 export default function HomeScreen({ navigation }: Props) {
@@ -60,10 +60,10 @@ export default function HomeScreen({ navigation }: Props) {
 
   const [championships, setChampionships] = useState<ChampionshipRow[]>([]);
   const [invites, setInvites]             = useState<PendingInvite[]>([]);
-  const [stats, setStats]                 = useState<QuickStats | null>(null);
-  const [nextMatch, setNextMatch]         = useState<NextMatchInfo | null>(null);
+  const [pendingConfirmations, setPendingConfirmations] = useState<PendingConfirmation[]>([]);
   const [loading, setLoading]             = useState(true);
   const [refreshing, setRefreshing]       = useState(false);
+  const [fabOpen, setFabOpen]             = useState(false);
 
   const activeChampionships   = championships.filter(c => c.status !== 'finished');
   const finishedChampionships = championships.filter(c => c.status === 'finished');
@@ -74,7 +74,7 @@ export default function HomeScreen({ navigation }: Props) {
 
     const userId = user!.id;
 
-    const [champsRes, invitesRes, myMemberships, myMatches] = await Promise.all([
+    const [champsRes, invitesRes] = await Promise.all([
       supabase
         .from('championships')
         .select('*, memberships(count)')
@@ -84,42 +84,7 @@ export default function HomeScreen({ navigation }: Props) {
         .select('*, championships(*)')
         .eq('user_id', userId)
         .eq('status', 'invited'),
-      supabase
-        .from('memberships')
-        .select('championship_id')
-        .eq('user_id', userId)
-        .eq('status', 'accepted'),
-      supabase
-        .from('matches')
-        .select('pair1_player1_id, pair1_player2_id, pair2_player1_id, pair2_player2_id, results(outcome)')
-        .or(
-          `pair1_player1_id.eq.${userId},pair1_player2_id.eq.${userId},` +
-          `pair2_player1_id.eq.${userId},pair2_player2_id.eq.${userId}`,
-        ),
     ]);
-
-    // ── Quick stats ──
-    const myChampIds = (myMemberships.data ?? []).map((m: any) => m.championship_id);
-    let wins = 0, tbWins = 0, played = 0;
-    for (const m of (myMatches.data ?? []) as any[]) {
-      const result = Array.isArray(m.results) ? m.results[0] : m.results ?? null;
-      if (!result) continue;
-      played++;
-      const inPair1 = m.pair1_player1_id === userId || m.pair1_player2_id === userId;
-      const outcome = result.outcome as string;
-      if (inPair1) {
-        if (outcome === 'p1win') wins++;
-        else if (outcome === 'p1tb') tbWins++;
-      } else {
-        if (outcome === 'p2win') wins++;
-        else if (outcome === 'p2tb') tbWins++;
-      }
-    }
-    setStats({
-      winRate: played > 0 ? Math.round((wins + tbWins) / played * 100) : 0,
-      matchesPlayed: played,
-      championships: myChampIds.length,
-    });
 
     // ── Championships with match progress ──
     const champRows: ChampionshipRow[] = [];
@@ -159,51 +124,64 @@ export default function HomeScreen({ navigation }: Props) {
     }
     setChampionships(champRows);
 
-    // ── Next pending match ──
+    // ── Pending confirmations ──
     const activeChampIds = champRows
       .filter(c => c.status === 'active')
       .map(c => c.id);
-
-    let foundNext: NextMatchInfo | null = null;
+    const pendingConfs: PendingConfirmation[] = [];
     if (activeChampIds.length > 0) {
-      const { data: pendingMatches } = await supabase
+      const { data: pendingResultMatches } = await supabase
         .from('matches')
-        .select('*, results(id)')
+        .select('*, results(*)')
         .in('championship_id', activeChampIds)
         .or(
           `pair1_player1_id.eq.${userId},pair1_player2_id.eq.${userId},` +
           `pair2_player1_id.eq.${userId},pair2_player2_id.eq.${userId}`,
-        )
-        .order('created_at', { ascending: true });
+        );
 
-      const pending = (pendingMatches ?? []).find((m: any) => {
+      const matchesNeedingConfirm = (pendingResultMatches ?? []).filter((m: any) => {
         const r = Array.isArray(m.results) ? m.results[0] : m.results;
-        return !r;
-      }) as Match | undefined;
+        return r && r.status === 'pending' && r.registered_by !== userId;
+      });
 
-      if (pending) {
-        const champ = champRows.find(c => c.id === pending.championship_id);
-        const playerIds = [
-          pending.pair1_player1_id, pending.pair1_player2_id,
-          pending.pair2_player1_id, pending.pair2_player2_id,
-        ];
-        const { data: profiles } = await supabase
+      if (matchesNeedingConfirm.length > 0) {
+        const pIds = new Set<string>();
+        matchesNeedingConfirm.forEach((m: any) => {
+          pIds.add(m.pair1_player1_id); pIds.add(m.pair1_player2_id);
+          pIds.add(m.pair2_player1_id); pIds.add(m.pair2_player2_id);
+          const r = Array.isArray(m.results) ? m.results[0] : m.results;
+          if (r) pIds.add(r.registered_by);
+        });
+        const { data: confProfiles } = await supabase
           .from('users')
-          .select('id, name, nickname, avatar_url, phone, created_at')
-          .in('id', playerIds);
+          .select('id, name, nickname, avatar_url')
+          .in('id', [...pIds]);
+        const pMap = new Map<string, any>();
+        (confProfiles ?? []).forEach((p: any) => pMap.set(p.id, p));
 
-        const pMap = new Map<string, UserProfile>();
-        (profiles ?? []).forEach((p: UserProfile) => pMap.set(p.id, p));
-
-        foundNext = {
-          match: pending,
-          championshipId: pending.championship_id,
-          championshipName: champ?.name ?? '',
-          players: pMap,
-        };
+        for (const m of matchesNeedingConfirm as any[]) {
+          const r = Array.isArray(m.results) ? m.results[0] : m.results;
+          const champ = champRows.find((c: any) => c.id === m.championship_id);
+          const getP = (id: string) => {
+            const p = pMap.get(id);
+            return { name: p?.name ?? '—', nickname: p?.nickname ?? null, avatarUrl: p?.avatar_url ?? null };
+          };
+          pendingConfs.push({
+            matchId: m.id,
+            resultId: r.id,
+            championshipId: m.championship_id,
+            championshipName: champ?.name ?? '',
+            score: r.score,
+            outcome: r.outcome,
+            registeredByName: pMap.get(r.registered_by)?.name ?? '—',
+            pair1: [getP(m.pair1_player1_id), getP(m.pair1_player2_id)],
+            pair2: [getP(m.pair2_player1_id), getP(m.pair2_player2_id)],
+            isSingles: m.pair1_player1_id === m.pair1_player2_id,
+          });
+        }
       }
     }
-    setNextMatch(foundNext);
+    setPendingConfirmations(pendingConfs);
 
     setInvites((invitesRes.data ?? []) as PendingInvite[]);
 
@@ -255,6 +233,81 @@ export default function HomeScreen({ navigation }: Props) {
           },
         },
       ],
+    );
+  };
+
+  const handleConfirmResult = async (resultId: string) => {
+    const { error } = await supabase
+      .from('results')
+      .update({ status: 'confirmed', confirmed_by: user!.id, confirmed_at: new Date().toISOString() })
+      .eq('id', resultId);
+    if (error) Alert.alert(t('common.error'), error.message);
+    else load(true);
+  };
+
+  const handleDisputeResult = (resultId: string) => {
+    Alert.alert(
+      t('matchDetail.disputeTitle'),
+      t('matchDetail.disputeBody'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('matchDetail.disputeBtn'),
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await supabase
+              .from('results')
+              .update({ status: 'disputed', confirmed_by: user!.id, confirmed_at: new Date().toISOString() })
+              .eq('id', resultId);
+            if (error) Alert.alert(t('common.error'), error.message);
+            else load(true);
+          },
+        },
+      ],
+    );
+  };
+
+  const renderPendingConfirmations = () => {
+    if (pendingConfirmations.length === 0) return null;
+    return (
+      <View style={styles.pendingConfSection}>
+        <Text style={styles.sectionLabel}>{t('home.pendingConfirmations')}</Text>
+        {pendingConfirmations.map(pc => (
+          <View key={pc.resultId} style={styles.pendingConfCard}>
+            <Text style={styles.pendingConfChamp} numberOfLines={1}>{pc.championshipName}</Text>
+            <View style={styles.pendingConfTeams}>
+              <View style={styles.pendingConfPair}>
+                <View style={styles.pendingConfAvatars}>
+                  <Avatar name={pc.pair1[0].nickname ?? pc.pair1[0].name} imageUrl={pc.pair1[0].avatarUrl} size={28} />
+                  {!pc.isSingles && <Avatar name={pc.pair1[1].nickname ?? pc.pair1[1].name} imageUrl={pc.pair1[1].avatarUrl} size={28} />}
+                </View>
+                <Text style={styles.pendingConfNames} numberOfLines={1}>
+                  {pc.isSingles ? (pc.pair1[0].nickname ?? pc.pair1[0].name) : `${pc.pair1[0].nickname ?? pc.pair1[0].name} & ${pc.pair1[1].nickname ?? pc.pair1[1].name}`}
+                </Text>
+              </View>
+              <Text style={styles.pendingConfVs}>VS</Text>
+              <View style={styles.pendingConfPair}>
+                <View style={styles.pendingConfAvatars}>
+                  <Avatar name={pc.pair2[0].nickname ?? pc.pair2[0].name} imageUrl={pc.pair2[0].avatarUrl} size={28} />
+                  {!pc.isSingles && <Avatar name={pc.pair2[1].nickname ?? pc.pair2[1].name} imageUrl={pc.pair2[1].avatarUrl} size={28} />}
+                </View>
+                <Text style={styles.pendingConfNames} numberOfLines={1}>
+                  {pc.isSingles ? (pc.pair2[0].nickname ?? pc.pair2[0].name) : `${pc.pair2[0].nickname ?? pc.pair2[0].name} & ${pc.pair2[1].nickname ?? pc.pair2[1].name}`}
+                </Text>
+              </View>
+            </View>
+            {pc.score && <Text style={styles.pendingConfScore}>{pc.score}</Text>}
+            <View style={styles.pendingConfActions}>
+              <TouchableOpacity style={styles.pendingConfDisputeBtn} onPress={() => handleDisputeResult(pc.resultId)}>
+                <Text style={styles.pendingConfDisputeText}>{t('home.disputeBtn')}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.pendingConfirmBtn} onPress={() => handleConfirmResult(pc.resultId)}>
+                <Text style={styles.pendingConfirmBtnText}>{t('home.confirmBtn')}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ))}
+      </View>
     );
   };
 
@@ -371,12 +424,6 @@ export default function HomeScreen({ navigation }: Props) {
 
       <View style={styles.header}>
         <Text style={styles.headerTitle}>{t('home.title')}</Text>
-        <TouchableOpacity
-          style={styles.joinBtn}
-          onPress={() => navigation.navigate('JoinChampionship')}
-        >
-          <Text style={styles.joinBtnText}>{t('home.join')}</Text>
-        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -389,82 +436,7 @@ export default function HomeScreen({ navigation }: Props) {
           />
         }
       >
-        {/* Quick stats banner */}
-        {stats && stats.matchesPlayed > 0 && (
-          <View style={styles.statsBanner}>
-            <View style={styles.statItem}>
-              <Text style={[styles.statValue, { color: '#4CAF50' }]}>{stats.winRate}%</Text>
-              <Text style={styles.statLabel}>{t('home.statsWinRate')}</Text>
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{stats.matchesPlayed}</Text>
-              <Text style={styles.statLabel}>{t('home.statsMatches')}</Text>
-            </View>
-            <View style={styles.statDivider} />
-            <View style={styles.statItem}>
-              <Text style={styles.statValue}>{stats.championships}</Text>
-              <Text style={styles.statLabel}>{t('home.statsChampionships')}</Text>
-            </View>
-          </View>
-        )}
-
-        {/* Next pending match */}
-        {nextMatch && (() => {
-          const m = nextMatch.match;
-          const p = (id: string) => nextMatch.players.get(id);
-          const name = (id: string) => p(id)?.nickname ?? p(id)?.name ?? '—';
-          const avatarUrl = (id: string) => p(id)?.avatar_url ?? null;
-          const fullName = (id: string) => p(id)?.name ?? '—';
-          const nick = (id: string) => p(id)?.nickname ?? null;
-          const isSingles = m.pair1_player1_id === m.pair1_player2_id;
-          return (
-            <TouchableOpacity
-              style={styles.nextMatchCard}
-              activeOpacity={0.8}
-              onPress={() =>
-                navigation.navigate('RegisterResult', {
-                  matchId: m.id,
-                  championshipId: nextMatch.championshipId,
-                  pair1Names: [fullName(m.pair1_player1_id), fullName(m.pair1_player2_id)],
-                  pair2Names: [fullName(m.pair2_player1_id), fullName(m.pair2_player2_id)],
-                  pair1Nicknames: [nick(m.pair1_player1_id), nick(m.pair1_player2_id)],
-                  pair2Nicknames: [nick(m.pair2_player1_id), nick(m.pair2_player2_id)],
-                  pair1Avatars: [avatarUrl(m.pair1_player1_id), avatarUrl(m.pair1_player2_id)],
-                  pair2Avatars: [avatarUrl(m.pair2_player1_id), avatarUrl(m.pair2_player2_id)],
-                })
-              }
-            >
-              <Text style={styles.nextMatchLabel}>{t('home.nextMatch')}</Text>
-              <Text style={styles.nextMatchChamp} numberOfLines={1}>{nextMatch.championshipName}</Text>
-              <View style={styles.nextMatchTeams}>
-                <View style={styles.nextMatchPair}>
-                  <View style={styles.nextMatchAvatars}>
-                    <Avatar name={name(m.pair1_player1_id)} imageUrl={avatarUrl(m.pair1_player1_id)} size={32} />
-                    {!isSingles && <Avatar name={name(m.pair1_player2_id)} imageUrl={avatarUrl(m.pair1_player2_id)} size={32} />}
-                  </View>
-                  <Text style={styles.nextMatchPairNames} numberOfLines={1}>
-                    {isSingles ? name(m.pair1_player1_id) : `${name(m.pair1_player1_id)} & ${name(m.pair1_player2_id)}`}
-                  </Text>
-                </View>
-                <Text style={styles.nextMatchVs}>VS</Text>
-                <View style={styles.nextMatchPair}>
-                  <View style={styles.nextMatchAvatars}>
-                    <Avatar name={name(m.pair2_player1_id)} imageUrl={avatarUrl(m.pair2_player1_id)} size={32} />
-                    {!isSingles && <Avatar name={name(m.pair2_player2_id)} imageUrl={avatarUrl(m.pair2_player2_id)} size={32} />}
-                  </View>
-                  <Text style={styles.nextMatchPairNames} numberOfLines={1}>
-                    {isSingles ? name(m.pair2_player1_id) : `${name(m.pair2_player1_id)} & ${name(m.pair2_player2_id)}`}
-                  </Text>
-                </View>
-              </View>
-              <View style={styles.nextMatchCta}>
-                <Text style={styles.nextMatchCtaText}>{t('home.registerResult')}</Text>
-              </View>
-            </TouchableOpacity>
-          );
-        })()}
-
+        {renderPendingConfirmations()}
         {renderInviteSection()}
         {activeChampionships.map(renderChampionshipItem)}
 
@@ -498,12 +470,37 @@ export default function HomeScreen({ navigation }: Props) {
         )}
       </ScrollView>
 
+      {fabOpen && (
+        <TouchableOpacity
+          style={styles.fabOverlay}
+          activeOpacity={1}
+          onPress={() => setFabOpen(false)}
+        />
+      )}
+
+      {fabOpen && (
+        <View style={styles.fabMenu}>
+          <TouchableOpacity
+            style={styles.fabMenuItem}
+            onPress={() => { setFabOpen(false); navigation.navigate('CreateChampionship'); }}
+          >
+            <Text style={styles.fabMenuLabel}>{t('home.create')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.fabMenuItem}
+            onPress={() => { setFabOpen(false); navigation.navigate('JoinChampionship'); }}
+          >
+            <Text style={styles.fabMenuLabel}>{t('home.joinWithCode')}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       <TouchableOpacity
-        style={styles.fab}
+        style={[styles.fab, fabOpen && styles.fabActive]}
         activeOpacity={0.85}
-        onPress={() => navigation.navigate('CreateChampionship')}
+        onPress={() => setFabOpen(prev => !prev)}
       >
-        <Text style={styles.fabText}>+</Text>
+        <Text style={[styles.fabText, fabOpen && styles.fabTextActive]}>+</Text>
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -513,42 +510,43 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   root:            { flex: 1, backgroundColor: colors.bg },
   loadingWrap:     { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-  watermark:       { position: 'absolute', width: '90%', height: '90%', top: '50%', left: '50%', transform: [{ translateX: '-50%' }, { translateY: '-45%' }], opacity: 0.04, zIndex: 0 },
+  watermark:       { position: 'absolute', width: '90%', height: '90%', top: '50%', left: '50%', transform: [{ translateX: '-50%' }, { translateY: '-45%' }], opacity: 0.08, zIndex: 0 },
 
   header:          { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: spacing.xl, paddingBottom: spacing.lg, zIndex: 1 },
   headerTitle:     { fontSize: 22, fontWeight: '800', color: colors.text, letterSpacing: -0.5 },
-  joinBtn:         { borderRadius: radius.lg, borderWidth: 1, borderColor: `rgba(${colors.accentRgb},0.4)`, paddingVertical: 8, paddingHorizontal: 14 },
-  joinBtnText:     { fontSize: 13, fontWeight: '700', color: colors.accent },
 
-  fab:             { position: 'absolute', bottom: 24, right: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 4 },
+  fab:             { position: 'absolute', bottom: 24, right: 20, width: 56, height: 56, borderRadius: 28, backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center', elevation: 6, shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.3, shadowRadius: 4, zIndex: 12 },
+  fabActive:       { transform: [{ rotate: '45deg' }] },
   fabText:         { fontSize: 30, fontWeight: '300', color: '#000', lineHeight: 34 },
+  fabTextActive:   {},
+  fabOverlay:      { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)', zIndex: 10 },
+  fabMenu:         { position: 'absolute', bottom: 90, right: 20, zIndex: 11, gap: 8, alignItems: 'flex-end' },
+  fabMenuItem:     { backgroundColor: colors.surface, borderRadius: radius.lg, paddingVertical: 12, paddingHorizontal: 18, borderWidth: 1, borderColor: colors.border, elevation: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 3 },
+  fabMenuLabel:    { fontSize: 14, fontWeight: '700', color: colors.text },
 
   list:            { paddingHorizontal: spacing.lg, paddingBottom: 80, zIndex: 1 },
-
-  // Stats banner
-  statsBanner:     { flexDirection: 'row', backgroundColor: colors.surface, borderRadius: radius.xl, padding: spacing.md, marginBottom: 14, borderWidth: 1, borderColor: colors.border },
-  statItem:        { flex: 1, alignItems: 'center' },
-  statValue:       { fontSize: 20, fontWeight: '900', color: colors.text },
-  statLabel:       { fontSize: 10, color: colors.textMuted, fontWeight: '600', marginTop: 2 },
-  statDivider:     { width: 1, backgroundColor: colors.border, marginVertical: 4 },
-
-  // Next match card
-  nextMatchCard:       { backgroundColor: colors.surface, borderRadius: radius.xl, padding: spacing.lg, marginBottom: 14, borderWidth: 1, borderColor: `rgba(${colors.accentRgb},0.25)` },
-  nextMatchLabel:      { fontSize: 10, fontWeight: '800', color: colors.accent, letterSpacing: 1.5, marginBottom: 4 },
-  nextMatchChamp:      { fontSize: 12, color: colors.textMuted, marginBottom: 12 },
-  nextMatchTeams:      { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
-  nextMatchPair:       { flex: 1, alignItems: 'center', gap: 6 },
-  nextMatchAvatars:    { flexDirection: 'row', gap: -6 },
-  nextMatchPairNames:  { fontSize: 11, color: colors.text, fontWeight: '600', textAlign: 'center' },
-  nextMatchVs:         { fontSize: 12, fontWeight: '800', color: colors.accent },
-  nextMatchCta:        { backgroundColor: colors.accent, borderRadius: radius.md, paddingVertical: 10, alignItems: 'center' },
-  nextMatchCtaText:    { fontSize: 13, fontWeight: '800', color: '#000' },
 
   // Progress bar on cards
   progressSection: { marginBottom: 12 },
   progressBar:     { height: 4, backgroundColor: colors.surface2, borderRadius: 2, overflow: 'hidden' as const, marginBottom: 6 },
   progressFill:    { height: '100%', backgroundColor: colors.accent, borderRadius: 2 },
   progressText:    { fontSize: 11, color: colors.textMuted, fontWeight: '600' },
+
+  // Pending confirmations
+  pendingConfSection:    { marginBottom: 20 },
+  pendingConfCard:       { backgroundColor: colors.surface2, borderRadius: radius.lg, padding: spacing.md, marginBottom: 8, borderWidth: 1, borderColor: `rgba(245,166,35,0.25)` },
+  pendingConfChamp:      { fontSize: 12, color: colors.textMuted, marginBottom: 10 },
+  pendingConfTeams:      { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 10 },
+  pendingConfPair:       { flex: 1, alignItems: 'center', gap: 4 },
+  pendingConfAvatars:    { flexDirection: 'row', gap: -6 },
+  pendingConfNames:      { fontSize: 11, color: colors.text, fontWeight: '600', textAlign: 'center' },
+  pendingConfVs:         { fontSize: 11, fontWeight: '800', color: colors.accent },
+  pendingConfScore:      { fontSize: 14, fontWeight: '700', color: colors.accent, textAlign: 'center', marginBottom: 10, letterSpacing: 1 },
+  pendingConfActions:    { flexDirection: 'row', gap: 8 },
+  pendingConfDisputeBtn: { flex: 1, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.error, alignItems: 'center' },
+  pendingConfDisputeText:{ fontSize: 14, fontWeight: '700', color: colors.error },
+  pendingConfirmBtn:     { flex: 1, paddingVertical: 10, borderRadius: radius.md, backgroundColor: '#4CAF50', alignItems: 'center' },
+  pendingConfirmBtnText: { fontSize: 14, fontWeight: '800', color: '#FFF' },
 
   inviteSection:   { marginBottom: 20 },
   sectionLabel:    { fontSize: 11, fontWeight: '700', color: colors.textMuted, letterSpacing: 0.5, marginBottom: 10, textTransform: 'uppercase' },

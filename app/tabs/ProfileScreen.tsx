@@ -10,6 +10,7 @@ import { useLanguage } from '../../contexts/LanguageContext';
 import { SUPPORTED_LANGUAGES, SupportedLanguage } from '../../lib/i18n';
 import { supabase } from '../../lib/supabase';
 import Avatar from '../../components/Avatar';
+import OnboardingScreen from '../../components/OnboardingScreen';
 import { radius, spacing, ThemeColors } from '../../constants/theme';
 import { ProfileStackParamList } from '../_navigators';
 
@@ -34,6 +35,7 @@ export default function ProfileScreen({ navigation }: Props) {
   const [stats,        setStats]        = useState<CareerStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [langOpen,     setLangOpen]     = useState(false);
+  const [tutorialOpen, setTutorialOpen] = useState(false);
 
   const loadStats = useCallback(async () => {
     setStatsLoading(true);
@@ -150,8 +152,8 @@ export default function ProfileScreen({ navigation }: Props) {
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBig}>
-                  <Text style={[styles.statBigValue, { color: colors.accent }]}>{stats?.points ?? 0}</Text>
-                  <Text style={styles.statBigLabel}>{t('profile.totalPoints')}</Text>
+                  <Text style={styles.statBigValue}>{stats?.played ?? 0}</Text>
+                  <Text style={styles.statBigLabel}>{t('profile.matchesPlayed')}</Text>
                 </View>
                 <View style={styles.statDivider} />
                 <View style={styles.statBig}>
@@ -178,8 +180,8 @@ export default function ProfileScreen({ navigation }: Props) {
                   <Text style={styles.recordLabel}>{t('profile.losses')}</Text>
                 </View>
                 <View style={styles.recordItem}>
-                  <Text style={[styles.recordValue, { color: colors.textMuted }]}>{stats?.played ?? 0}</Text>
-                  <Text style={styles.recordLabel}>{t('profile.matchesPlayed')}</Text>
+                  <Text style={[styles.recordValue, { color: colors.accent }]}>{stats?.points ?? 0}</Text>
+                  <Text style={styles.recordLabel}>{t('profile.totalPoints')}</Text>
                 </View>
               </View>
             </>
@@ -211,7 +213,7 @@ export default function ProfileScreen({ navigation }: Props) {
               thumbColor="#fff"
             />
           </View>
-          <TouchableOpacity style={[styles.row, styles.rowLast]} onPress={() => setLangOpen(true)}>
+          <TouchableOpacity style={styles.row} onPress={() => setLangOpen(true)}>
             <Text style={styles.rowLabel}>{t('profile.language')}</Text>
             <View style={styles.langDropdown}>
               <Text style={styles.langDropdownValue}>{t(`languages.${language}`)}</Text>
@@ -237,6 +239,15 @@ export default function ProfileScreen({ navigation }: Props) {
                 ))}
               </View>
             </TouchableOpacity>
+          </Modal>
+
+          <TouchableOpacity style={[styles.row, styles.rowLast]} onPress={() => setTutorialOpen(true)}>
+            <Text style={styles.rowLabel}>{t('profile.tutorial')}</Text>
+            <Text style={styles.rowChevron}>›</Text>
+          </TouchableOpacity>
+
+          <Modal visible={tutorialOpen} animationType="slide" onRequestClose={() => setTutorialOpen(false)}>
+            <OnboardingScreen onFinish={() => setTutorialOpen(false)} />
           </Modal>
         </View>
 

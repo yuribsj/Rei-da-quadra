@@ -3,6 +3,7 @@
 export type ChampionshipStatus = 'waiting' | 'active' | 'finished';
 export type MembershipStatus   = 'invited' | 'accepted' | 'declined';
 export type MatchOutcome       = 'p1win' | 'p1tb' | 'p2tb' | 'p2win';
+export type ResultStatus       = 'pending' | 'confirmed' | 'disputed';
 
 // ─── DB Entities ──────────────────────────────────────────────────────────────
 
@@ -66,6 +67,9 @@ export interface Result {
   score:           string | null;
   sets:            [number, number][] | null;
   registered_by:   string;
+  status:          ResultStatus;
+  confirmed_by:    string | null;
+  confirmed_at:    string | null;
   created_at:      string;
 }
 

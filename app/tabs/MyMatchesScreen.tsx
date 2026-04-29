@@ -1,15 +1,15 @@
 import { useCallback, useState } from 'react';
 import {
-  ActivityIndicator, RefreshControl, ScrollView, StyleSheet,
+  ActivityIndicator, Alert, RefreshControl, ScrollView, StyleSheet,
   Text, TouchableOpacity, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { supabase } from '../../lib/supabase';
-import { MatchOutcome } from '../../lib/types';
+import { MatchOutcome, ResultStatus } from '../../lib/types';
 import { radius, spacing, ThemeColors } from '../../constants/theme';
 import Avatar from '../../components/Avatar';
 
@@ -26,12 +26,15 @@ interface DisplayMatch {
   pair2: [PlayerInfo, PlayerInfo];
   inPair1:     boolean;
   result: {
-    outcome: MatchOutcome;
-    score:   string | null;
-    points:  number;
-    won:     boolean;
-    tb:      boolean;
-    pair1Won: boolean;
+    id:           string;
+    outcome:      MatchOutcome;
+    score:        string | null;
+    points:       number;
+    won:          boolean;
+    tb:           boolean;
+    pair1Won:     boolean;
+    status:       ResultStatus;
+    registeredBy: string;
   } | null;
 }
 
@@ -53,6 +56,7 @@ export default function MyMatchesScreen() {
   const { user } = useAuth();
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const navigation = useNavigation<any>();
   const styles = createStyles(colors);
 
   const STATUS_LABEL: Record<string, string> = {
@@ -156,12 +160,15 @@ export default function MyMatchesScreen() {
         const oppPts = inPair1 ? p2pts : p1pts;
         const pair1Won = raw.outcome === 'p1win' || raw.outcome === 'p1tb';
         result = {
-          outcome:  raw.outcome,
-          score:    raw.score,
+          id:           raw.id,
+          outcome:      raw.outcome,
+          score:        raw.score,
           points,
-          won:      points > oppPts,
-          tb:       raw.outcome === 'p1tb' || raw.outcome === 'p2tb',
+          won:          points > oppPts,
+          tb:           raw.outcome === 'p1tb' || raw.outcome === 'p2tb',
           pair1Won,
+          status:       raw.status ?? 'confirmed',
+          registeredBy: raw.registered_by,
         };
       }
 
@@ -210,6 +217,37 @@ export default function MyMatchesScreen() {
     });
   };
 
+  const handleConfirmResult = async (resultId: string) => {
+    const { error } = await supabase
+      .from('results')
+      .update({ status: 'confirmed', confirmed_by: user!.id, confirmed_at: new Date().toISOString() })
+      .eq('id', resultId);
+    if (error) Alert.alert(t('common.error'), error.message);
+    else load(true);
+  };
+
+  const handleDisputeResult = (resultId: string) => {
+    Alert.alert(
+      t('matchDetail.disputeTitle'),
+      t('matchDetail.disputeBody'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('matchDetail.disputeBtn'),
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await supabase
+              .from('results')
+              .update({ status: 'disputed', confirmed_by: user!.id, confirmed_at: new Date().toISOString() })
+              .eq('id', resultId);
+            if (error) Alert.alert(t('common.error'), error.message);
+            else load(true);
+          },
+        },
+      ],
+    );
+  };
+
   const renderMatchCard = (match: DisplayMatch) => {
     const { result } = match;
     const pair1Won = result?.pair1Won ?? false;
@@ -221,7 +259,7 @@ export default function MyMatchesScreen() {
     return (
       <View
         key={match.id}
-        style={[styles.matchCard, result && styles.matchCardDone]}
+        style={[styles.matchCard, result?.status === 'confirmed' && styles.matchCardDone]}
       >
         <View style={styles.roundRow}>
           <Text style={styles.roundLabel}>{t('myMatches.round', { number: match.roundNumber })}</Text>
@@ -326,10 +364,42 @@ export default function MyMatchesScreen() {
           </View>
         </View>
 
-        {result && (
+        {result && result.status === 'confirmed' && (
           <View style={styles.closedRow}>
             <View style={styles.closedBadge}>
               <Text style={styles.closedBadgeText}>{t('myMatches.closed')}</Text>
+            </View>
+          </View>
+        )}
+
+        {result && result.status === 'pending' && (
+          <View style={styles.pendingRow}>
+            {result.registeredBy !== user?.id ? (
+              <View style={styles.confirmInlineRow}>
+                <View style={styles.pendingConfirmBadge}>
+                  <Text style={styles.pendingConfirmText}>{t('myMatches.pendingConfirmation')}</Text>
+                </View>
+                <View style={styles.confirmInlineActions}>
+                  <TouchableOpacity style={styles.confirmInlineDisputeBtn} onPress={() => handleDisputeResult(result.id)}>
+                    <Text style={styles.confirmInlineDisputeText}>{t('myMatches.disputeBtn')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.confirmInlineBtn} onPress={() => handleConfirmResult(result.id)}>
+                    <Text style={styles.confirmInlineBtnText}>{t('myMatches.confirmBtn')}</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.pendingConfirmBadge}>
+                <Text style={styles.pendingConfirmText}>{t('myMatches.pendingConfirmation')}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {result && result.status === 'disputed' && (
+          <View style={styles.pendingRow}>
+            <View style={styles.disputedBadge}>
+              <Text style={styles.disputedBadgeText}>{t('myMatches.disputed')}</Text>
             </View>
           </View>
         )}
@@ -367,6 +437,7 @@ export default function MyMatchesScreen() {
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.filterBar}
+          style={styles.filterScroll}
         >
           <TouchableOpacity
             style={[styles.filterChip, !filter && styles.filterChipActive]}
@@ -394,7 +465,7 @@ export default function MyMatchesScreen() {
       )}
 
       {sections.length === 0 ? (
-        <View style={styles.empty}>
+        <View style={[styles.empty, { flex: 1 }]}>
           <Text style={styles.emptyIcon}>🎾</Text>
           <Text style={styles.emptyTitle}>{t('myMatches.noMatches')}</Text>
           <Text style={styles.emptyBody}>
@@ -403,6 +474,7 @@ export default function MyMatchesScreen() {
         </View>
       ) : (
         <ScrollView
+          style={{ flex: 1 }}
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -417,7 +489,15 @@ export default function MyMatchesScreen() {
           {filteredSections.map(section => (
             <View key={section.championshipId} style={styles.section}>
               <View style={styles.sectionHeader}>
-                <Text style={styles.sectionName} numberOfLines={1}>{section.championshipName}</Text>
+                <TouchableOpacity
+                  style={{ flex: 1, marginRight: 8 }}
+                  onPress={() => navigation.navigate('Home', {
+                    screen: 'ChampionshipDetail',
+                    params: { id: section.championshipId, name: section.championshipName },
+                  })}
+                >
+                  <Text style={[styles.sectionName, { textDecorationLine: 'underline' }]} numberOfLines={1}>{section.championshipName}</Text>
+                </TouchableOpacity>
                 <View style={[styles.statusBadge, { backgroundColor: (STATUS_COLOR[section.status] ?? colors.textMuted) + '22' }]}>
                   <Text style={[styles.statusText, { color: STATUS_COLOR[section.status] ?? colors.textMuted }]}>
                     {STATUS_LABEL[section.status] ?? section.status}
@@ -439,8 +519,9 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   header:         { paddingHorizontal: spacing.xl, paddingTop: spacing.lg, paddingBottom: spacing.sm },
   title:          { fontSize: 22, fontWeight: '800', color: colors.text },
 
-  filterBar:          { paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 8 },
-  filterChip:         { paddingHorizontal: 14, paddingVertical: 7, borderRadius: radius.full, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
+  filterScroll:       { flexGrow: 0, flexShrink: 0 },
+  filterBar:          { paddingHorizontal: spacing.lg, paddingBottom: spacing.sm, gap: 8, alignItems: 'center' },
+  filterChip:         { paddingHorizontal: 14, height: 34, justifyContent: 'center', borderRadius: radius.full, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   filterChipActive:   { borderColor: colors.accent, backgroundColor: `rgba(${colors.accentRgb},0.12)` },
   filterChipText:     { fontSize: 13, fontWeight: '600', color: colors.textMuted },
   filterChipTextActive: { color: colors.accent, fontWeight: '700' },
@@ -449,7 +530,7 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
 
   section:        { gap: 8 },
   sectionHeader:  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
-  sectionName:    { flex: 1, fontSize: 15, fontWeight: '800', color: colors.text, marginRight: 8 },
+  sectionName:    { fontSize: 15, fontWeight: '800', color: colors.text },
   statusBadge:    { borderRadius: radius.full, paddingHorizontal: 10, paddingVertical: 4 },
   statusText:     { fontSize: 11, fontWeight: '700' },
 
@@ -493,6 +574,18 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   closedRow:      { marginTop: 8 },
   closedBadge:    { backgroundColor: 'rgba(76,175,80,0.15)', borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start' },
   closedBadgeText:{ fontSize: 10, color: '#4CAF50', fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
+
+  pendingConfirmBadge: { backgroundColor: 'rgba(245,166,35,0.15)', borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 5, alignSelf: 'flex-start' },
+  pendingConfirmText:  { fontSize: 11, fontWeight: '700', color: colors.warning },
+  disputedBadge:       { backgroundColor: 'rgba(255,107,107,0.12)', borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 5, alignSelf: 'flex-start' },
+  disputedBadgeText:   { fontSize: 11, fontWeight: '700', color: colors.error },
+
+  confirmInlineRow:        { gap: 8 },
+  confirmInlineActions:    { flexDirection: 'row', gap: 8 },
+  confirmInlineDisputeBtn: { flex: 1, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.error, alignItems: 'center' },
+  confirmInlineDisputeText:{ fontSize: 12, fontWeight: '700', color: colors.error },
+  confirmInlineBtn:        { flex: 1, paddingVertical: 8, borderRadius: radius.md, backgroundColor: '#4CAF50', alignItems: 'center' },
+  confirmInlineBtnText:    { fontSize: 12, fontWeight: '800', color: '#FFF' },
 
   pendingRow:     { marginTop: 8 },
   pendingBadge:   { backgroundColor: `rgba(${colors.accentRgb},0.1)`, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 5, alignSelf: 'flex-start' },

@@ -1,4 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import OnboardingScreen from './components/OnboardingScreen';
 import { NavigationContainer } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -16,7 +18,15 @@ function RootNavigator() {
   const { session, profile, loading } = useAuth();
   const { colors, isDark } = useTheme();
 
-  if (loading) {
+  const [onboardingDone, setOnboardingDone] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    AsyncStorage.getItem('@onboarding_done').then(val => {
+      setOnboardingDone(val === 'true');
+    });
+  }, []);
+
+  if (loading || onboardingDone === null) {
     return (
       <View style={{ flex: 1, backgroundColor: colors.bg }} />
     );
@@ -27,6 +37,18 @@ function RootNavigator() {
 
   // Logged in but no nickname yet → Profile setup
   if (!profile?.nickname) return <ProfileSetupScreen />;
+
+  // Onboarding not done → Show walkthrough
+  if (!onboardingDone) {
+    return (
+      <OnboardingScreen
+        onFinish={async () => {
+          await AsyncStorage.setItem('@onboarding_done', 'true');
+          setOnboardingDone(true);
+        }}
+      />
+    );
+  }
 
   // Fully onboarded → Main app
   return <AppNavigator />;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
-  ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View,
+  ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -89,14 +89,57 @@ export default function MatchDetailScreen({ navigation, route }: Props) {
   const nickname = (id: string) => players.get(id)?.nickname ?? null;
   const avatar = (id: string) => players.get(id)?.avatar_url ?? null;
 
-  const canEdit =
-    isAdmin ||
-    (match && (
-      match.pair1_player1_id === user?.id ||
-      match.pair1_player2_id === user?.id ||
-      match.pair2_player1_id === user?.id ||
-      match.pair2_player2_id === user?.id
-    ));
+  const isPlayerInMatch = match && (
+    match.pair1_player1_id === user?.id ||
+    match.pair1_player2_id === user?.id ||
+    match.pair2_player1_id === user?.id ||
+    match.pair2_player2_id === user?.id
+  );
+
+  const canEdit = isAdmin || isPlayerInMatch;
+
+  const isOpposingPlayer = result && result.registered_by !== user?.id && isPlayerInMatch;
+  const canConfirm = result?.status === 'pending' && isOpposingPlayer;
+  const canAdminConfirm = result?.status === 'pending' && isAdmin;
+
+  const handleConfirm = async () => {
+    const { error } = await supabase
+      .from('results')
+      .update({
+        status: 'confirmed',
+        confirmed_by: user!.id,
+        confirmed_at: new Date().toISOString(),
+      })
+      .eq('id', result!.id);
+    if (error) Alert.alert(t('common.error'), error.message);
+    else load();
+  };
+
+  const handleDispute = () => {
+    Alert.alert(
+      t('matchDetail.disputeTitle'),
+      t('matchDetail.disputeBody'),
+      [
+        { text: t('common.cancel'), style: 'cancel' },
+        {
+          text: t('matchDetail.disputeBtn'),
+          style: 'destructive',
+          onPress: async () => {
+            const { error } = await supabase
+              .from('results')
+              .update({
+                status: 'disputed',
+                confirmed_by: user!.id,
+                confirmed_at: new Date().toISOString(),
+              })
+              .eq('id', result!.id);
+            if (error) Alert.alert(t('common.error'), error.message);
+            else load();
+          },
+        },
+      ],
+    );
+  };
 
   if (loading || !match) {
     return (
@@ -197,30 +240,80 @@ export default function MatchDetailScreen({ navigation, route }: Props) {
               <Text style={styles.pendingText}>{t('matchDetail.pending')}</Text>
             </>
           )}
-        </View>
 
-        {canEdit && (
-          <TouchableOpacity
-            style={result ? styles.editBtn : styles.registerBtn}
-            onPress={() =>
-              navigation.navigate('RegisterResult', {
-                matchId:        match.id,
-                championshipId,
-                pair1Names:     [fullName(match.pair1_player1_id), fullName(match.pair1_player2_id)],
-                pair2Names:     [fullName(match.pair2_player1_id), fullName(match.pair2_player2_id)],
-                pair1Nicknames: [nickname(match.pair1_player1_id), nickname(match.pair1_player2_id)],
-                pair2Nicknames: [nickname(match.pair2_player1_id), nickname(match.pair2_player2_id)],
-                pair1Avatars:   [avatar(match.pair1_player1_id), avatar(match.pair1_player2_id)],
-                pair2Avatars:   [avatar(match.pair2_player1_id), avatar(match.pair2_player2_id)],
-                ...(result ? { existingResultId: result.id, existingSets: result.sets ?? undefined } : {}),
-              })
-            }
-          >
-            <Text style={result ? styles.editBtnText : styles.registerBtnText}>
-              {result ? t('matchDetail.editResult') : t('matchDetail.registerResult')}
-            </Text>
-          </TouchableOpacity>
-        )}
+          {/* Status & actions — inside card */}
+          {result && result.status === 'pending' && (
+            <>
+              <View style={styles.divider} />
+              {canConfirm ? (
+                <View style={styles.confirmActions}>
+                  <TouchableOpacity style={styles.disputeBtn} onPress={handleDispute}>
+                    <Text style={styles.disputeBtnText}>{t('matchDetail.disputeResult')}</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.confirmBtn} onPress={handleConfirm}>
+                    <Text style={styles.confirmBtnText}>{t('common.confirm')}</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : canAdminConfirm ? (
+                <TouchableOpacity style={styles.confirmBtnFull} onPress={handleConfirm}>
+                  <Text style={styles.confirmBtnText}>{t('matchDetail.adminConfirm')}</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.statusRow}>
+                  <View style={styles.pendingConfirmBadge}>
+                    <Text style={styles.pendingConfirmText}>
+                      {t('matchDetail.pendingConfirmation')}
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </>
+          )}
+
+          {result && result.status === 'disputed' && (
+            <>
+              <View style={styles.divider} />
+              <View style={styles.statusRow}>
+                <View style={styles.disputedBadge}>
+                  <Text style={styles.disputedBadgeText}>{t('matchDetail.disputed')}</Text>
+                </View>
+              </View>
+              {canAdminConfirm && (
+                <TouchableOpacity style={styles.confirmBtnFull} onPress={handleConfirm}>
+                  <Text style={styles.confirmBtnText}>{t('matchDetail.adminConfirm')}</Text>
+                </TouchableOpacity>
+              )}
+            </>
+          )}
+
+          {/* Edit / Register button — inside card */}
+          {canEdit && (
+            <>
+              <View style={styles.divider} />
+              <TouchableOpacity
+                style={result ? styles.editBtn : styles.registerBtn}
+                onPress={() =>
+                  navigation.navigate('RegisterResult', {
+                    matchId:        match.id,
+                    championshipId,
+                    pair1Names:     [fullName(match.pair1_player1_id), fullName(match.pair1_player2_id)],
+                    pair2Names:     [fullName(match.pair2_player1_id), fullName(match.pair2_player2_id)],
+                    pair1Nicknames: [nickname(match.pair1_player1_id), nickname(match.pair1_player2_id)],
+                    pair2Nicknames: [nickname(match.pair2_player1_id), nickname(match.pair2_player2_id)],
+                    pair1Avatars:   [avatar(match.pair1_player1_id), avatar(match.pair1_player2_id)],
+                    pair2Avatars:   [avatar(match.pair2_player1_id), avatar(match.pair2_player2_id)],
+                    ...(result ? { existingResultId: result.id, existingSets: result.sets ?? undefined } : {}),
+                    isAdmin,
+                  })
+                }
+              >
+                <Text style={result ? styles.editBtnText : styles.registerBtnText}>
+                  {result ? t('matchDetail.editResult') : t('matchDetail.registerResult')}
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -262,8 +355,20 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
 
   pendingText:    { fontSize: 14, color: colors.textMuted, textAlign: 'center', fontStyle: 'italic' },
 
-  editBtn:        { marginTop: 16, borderRadius: radius.lg, borderWidth: 1, borderColor: `rgba(${colors.accentRgb},0.3)`, paddingVertical: 14, alignItems: 'center' },
+  statusRow:           {},
+  pendingConfirmBadge: { backgroundColor: 'rgba(245,166,35,0.12)', borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 6, alignSelf: 'flex-start' },
+  pendingConfirmText:  { fontSize: 12, fontWeight: '700', color: colors.warning },
+  confirmActions:      { flexDirection: 'row', gap: 10 },
+  confirmBtn:          { flex: 1, backgroundColor: '#4CAF50', borderRadius: radius.md, height: 44, alignItems: 'center', justifyContent: 'center' },
+  confirmBtnFull:      { backgroundColor: '#4CAF50', borderRadius: radius.md, height: 44, alignItems: 'center', justifyContent: 'center' },
+  confirmBtnText:      { fontSize: 13, fontWeight: '800', color: '#FFF' },
+  disputeBtn:          { flex: 1, borderRadius: radius.md, height: 44, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.error },
+  disputeBtnText:      { fontSize: 13, fontWeight: '700', color: colors.error },
+  disputedBadge:       { backgroundColor: 'rgba(255,107,107,0.12)', borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 6, alignSelf: 'flex-start' },
+  disputedBadgeText:   { fontSize: 12, fontWeight: '700', color: colors.error },
+
+  editBtn:        { borderRadius: radius.lg, borderWidth: 1, borderColor: `rgba(${colors.accentRgb},0.3)`, paddingVertical: 14, alignItems: 'center' },
   editBtnText:    { fontSize: 15, fontWeight: '700', color: colors.accent },
-  registerBtn:    { marginTop: 16, backgroundColor: colors.accent, borderRadius: radius.lg, paddingVertical: 14, alignItems: 'center' },
+  registerBtn:    { backgroundColor: colors.accent, borderRadius: radius.lg, paddingVertical: 14, alignItems: 'center' },
   registerBtnText:{ fontSize: 15, fontWeight: '800', color: '#000' },
 });

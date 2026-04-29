@@ -16,6 +16,7 @@ import {
   RankingEntry, Round, UserProfile,
 } from '../../lib/types';
 import Avatar from '../../components/Avatar';
+import ScoringTooltip from '../../components/ScoringTooltip';
 import { useTheme } from '../../contexts/ThemeContext';
 import { radius, spacing, ThemeColors } from '../../constants/theme';
 import { HomeStackParamList } from '../_navigators';
@@ -25,7 +26,7 @@ type Props = {
   route:      RouteProp<HomeStackParamList, 'ChampionshipDetail'>;
 };
 
-type Tab = 'waiting' | 'matches' | 'ranking' | 'players';
+type Tab = 'waiting' | 'dashboard' | 'matches' | 'ranking';
 
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
@@ -74,8 +75,9 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
   const [loading, setLoading]           = useState(true);
   const [silentRefresh, setSilentRefresh] = useState(false);
   const [starting, setStarting]         = useState(false);
-  const [activeTab, setActiveTab]       = useState<Tab>('matches');
+  const [activeTab, setActiveTab]       = useState<Tab>('dashboard');
   const [selectedRankEntry, setSelectedRankEntry] = useState<RankingEntry | null>(null);
+  const [scoringVisible, setScoringVisible] = useState(false);
   const tabInitialized = useRef(false); // tracks first successful load for tab init
   const hasMounted     = useRef(false);  // tracks first focus for spinner vs silent
 
@@ -133,7 +135,7 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
 
     // Set initial tab only once — subsequent reloads preserve the user's current tab
     if (!tabInitialized.current) {
-      setActiveTab(champ?.status === 'waiting' ? 'waiting' : 'matches');
+      setActiveTab(champ?.status === 'waiting' ? 'waiting' : 'dashboard');
       tabInitialized.current = true;
     }
 
@@ -189,7 +191,10 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
 
     // active status
     const allMatches   = rounds.flatMap(r => r.matches ?? []);
-    const pendingCount = allMatches.filter(m => !m.results).length;
+    const pendingCount = allMatches.filter(m => {
+      const r = Array.isArray(m.results) ? m.results[0] : m.results;
+      return !r || r.status !== 'confirmed';
+    }).length;
     const subtitle     = pendingCount > 0
       ? t('championshipDetail.pendingMatches', { count: pendingCount })
       : t('championshipDetail.allMatchesRegistered');
@@ -535,7 +540,7 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
             return (
               <TouchableOpacity
                 key={match.id}
-                style={[styles.matchCard, result && styles.matchCardDone]}
+                style={[styles.matchCard, result?.status === 'confirmed' && styles.matchCardDone]}
                 activeOpacity={0.75}
                 onPress={() =>
                   navigation.navigate('MatchDetail', {
@@ -638,11 +643,25 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
                   </View>
                 </View>
 
-                {/* Closed badge */}
-                {result && (
+                {/* Status badges */}
+                {result && result.status === 'confirmed' && (
                   <View style={styles.closedRow}>
                     <View style={styles.closedBadge}>
                       <Text style={styles.closedBadgeText}>{t('championshipDetail.closed')}</Text>
+                    </View>
+                  </View>
+                )}
+                {result && result.status === 'pending' && (
+                  <View style={styles.closedRow}>
+                    <View style={styles.pendingConfirmBadge}>
+                      <Text style={styles.pendingConfirmText}>{t('championshipDetail.pendingConfirmation')}</Text>
+                    </View>
+                  </View>
+                )}
+                {result && result.status === 'disputed' && (
+                  <View style={styles.closedRow}>
+                    <View style={styles.disputedBadge}>
+                      <Text style={styles.disputedBadgeText}>{t('championshipDetail.disputed')}</Text>
                     </View>
                   </View>
                 )}
@@ -664,6 +683,7 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
                             pair2Nicknames: [p2a.nickname, p2b.nickname],
                             pair1Avatars:   [p1a.avatarUrl, p1b.avatarUrl],
                             pair2Avatars:   [p2a.avatarUrl, p2b.avatarUrl],
+                            isAdmin,
                           });
                         }}
                       >
@@ -695,7 +715,8 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
           <Text style={styles.emptyTabText}>{t('championshipDetail.rankingEmpty')}</Text>
         </View>
       ) : (
-        ranking.map((entry, idx) => (
+        <>
+        {ranking.map((entry, idx) => (
           <TouchableOpacity
             key={entry.userId}
             style={[styles.rankRow, entry.userId === user?.id && styles.rankRowMe]}
@@ -722,6 +743,9 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
                   </View>
                 )}
               </View>
+              {entry.nickname ? (
+                <Text style={styles.rankFullName} numberOfLines={1}>{entry.name}</Text>
+              ) : null}
               <Text style={styles.rankSub}>
                 {entry.wins}V · {entry.tbWins}TB+ · {entry.tbLosses}TB- · {entry.losses}D
               </Text>
@@ -731,43 +755,156 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
               <Text style={styles.rankPtsLabel}>pts</Text>
             </View>
           </TouchableOpacity>
-        ))
+        ))}
+        </>
       )}
     </ScrollView>
   );
 
-  const renderPlayersTab = () => (
-    <ScrollView contentContainerStyle={styles.tabScrollContent} refreshControl={refreshControl}>
-      {acceptedMembers.length === 0 ? (
-        <View style={styles.emptyTab}>
-          <Text style={styles.emptyTabText}>{t('championshipDetail.noConfirmedPlayers')}</Text>
+  const renderDashboardTab = () => {
+    const myEntry = ranking.find(r => r.userId === user?.id);
+    const myRank = ranking.findIndex(r => r.userId === user?.id);
+    const totalPlayers = ranking.length;
+    const allMatches = rounds.flatMap(r => r.matches ?? []);
+    const totalMatches = allMatches.filter(m => {
+      const uid = user?.id;
+      return m.pair1_player1_id === uid || m.pair1_player2_id === uid ||
+             m.pair2_player1_id === uid || m.pair2_player2_id === uid;
+    }).length;
+    const playedMatches = myEntry?.played ?? 0;
+    const winRate = playedMatches > 0 ? Math.round(((myEntry?.wins ?? 0) + (myEntry?.tbWins ?? 0)) / playedMatches * 100) : 0;
+
+    // Find next pending match for this user
+    let nextPendingMatch: Match | null = null;
+    for (const round of rounds) {
+      for (const match of (round.matches ?? [])) {
+        const uid = user?.id;
+        const isInMatch = match.pair1_player1_id === uid || match.pair1_player2_id === uid ||
+                          match.pair2_player1_id === uid || match.pair2_player2_id === uid;
+        if (!isInMatch) continue;
+        const result = Array.isArray(match.results) ? match.results[0] : match.results ?? null;
+        if (!result) { nextPendingMatch = match; break; }
+      }
+      if (nextPendingMatch) break;
+    }
+
+    return (
+      <ScrollView contentContainerStyle={styles.tabScrollContent} refreshControl={refreshControl}>
+        {/* Rank + Points hero */}
+        <View style={styles.dashHero}>
+          <View style={styles.dashRankCircle}>
+            <Text style={styles.dashRankPos}>
+              {myRank >= 0 && myRank < 3
+                ? (myRank === 0 ? '🥇' : myRank === 1 ? '🥈' : '🥉')
+                : myRank >= 0 ? `${myRank + 1}º` : '—'}
+            </Text>
+            <Text style={styles.dashRankLabel}>{t('home.rankPlace')}</Text>
+          </View>
+          <View style={styles.dashHeroDivider} />
+          <View style={styles.dashPtsBlock}>
+            <Text style={styles.dashPtsValue}>{myEntry?.points ?? 0}</Text>
+            <Text style={styles.dashPtsLabel}>{t('championshipDetail.pointsLabel')}</Text>
+          </View>
+          <View style={styles.dashHeroDivider} />
+          <View style={styles.dashWinRateBlock}>
+            <Text style={styles.dashWinRateValue}>{winRate}%</Text>
+            <Text style={styles.dashWinRateLabel}>{t('home.statsWinRate')}</Text>
+          </View>
         </View>
-      ) : (
-        acceptedMembers.map(m => {
-          const displayName = m.users?.nickname ?? m.users?.name ?? '—';
-          const pts = ranking.find(r => r.userId === m.user_id)?.points ?? 0;
+
+        {/* Progress bar */}
+        <View style={styles.dashProgressCard}>
+          <View style={styles.dashProgressHeader}>
+            <Text style={styles.dashProgressLabel}>{t('home.matchesProgress', { played: playedMatches, total: totalMatches })}</Text>
+            <Text style={styles.dashProgressPct}>{totalMatches > 0 ? Math.round(playedMatches / totalMatches * 100) : 0}%</Text>
+          </View>
+          <View style={styles.dashProgressBar}>
+            <View style={[styles.dashProgressFill, { width: `${totalMatches > 0 ? (playedMatches / totalMatches) * 100 : 0}%` }]} />
+          </View>
+        </View>
+
+        {/* Stats grid */}
+        <View style={styles.dashStatsGrid}>
+          <View style={styles.dashStatBox}>
+            <Text style={[styles.dashStatValue, { color: '#4CAF50' }]}>{myEntry?.wins ?? 0}</Text>
+            <Text style={styles.dashStatLabel} numberOfLines={1} adjustsFontSizeToFit>{t('championshipDetail.winsLabel')}</Text>
+            <Text style={styles.dashStatSub}>3 pts</Text>
+          </View>
+          <View style={styles.dashStatBox}>
+            <Text style={[styles.dashStatValue, { color: colors.accent }]}>{myEntry?.tbWins ?? 0}</Text>
+            <Text style={styles.dashStatLabel} numberOfLines={1} adjustsFontSizeToFit>{t('championshipDetail.tbPlusLabel')}</Text>
+            <Text style={styles.dashStatSub}>2 pts</Text>
+          </View>
+          <View style={styles.dashStatBox}>
+            <Text style={[styles.dashStatValue, { color: colors.warning }]}>{myEntry?.tbLosses ?? 0}</Text>
+            <Text style={styles.dashStatLabel} numberOfLines={1} adjustsFontSizeToFit>{t('championshipDetail.tbMinusLabel')}</Text>
+            <Text style={styles.dashStatSub}>1 pt</Text>
+          </View>
+          <View style={styles.dashStatBox}>
+            <Text style={[styles.dashStatValue, { color: colors.error }]}>{myEntry?.losses ?? 0}</Text>
+            <Text style={styles.dashStatLabel} numberOfLines={1} adjustsFontSizeToFit>{t('championshipDetail.lossesLabel')}</Text>
+            <Text style={styles.dashStatSub}>0 pts</Text>
+          </View>
+        </View>
+
+        {/* Next match card */}
+        {nextPendingMatch && (() => {
+          const m = nextPendingMatch!;
+          const p1a = playerInfo(m.pair1_player1_id);
+          const p1b = playerInfo(m.pair1_player2_id);
+          const p2a = playerInfo(m.pair2_player1_id);
+          const p2b = playerInfo(m.pair2_player2_id);
+          const isSinglesMatch = m.pair1_player1_id === m.pair1_player2_id;
           return (
-            <View key={m.id} style={styles.playerRow}>
-              <Avatar name={displayName} imageUrl={m.users?.avatar_url} size={40} />
-              <View style={styles.playerInfo}>
-                <Text style={styles.rosterName} numberOfLines={1}>{displayName}</Text>
-                <Text style={styles.playerPts}>{pts} pts</Text>
+            <TouchableOpacity
+              style={styles.dashNextMatch}
+              activeOpacity={0.8}
+              onPress={() =>
+                navigation.navigate('RegisterResult', {
+                  matchId: m.id,
+                  championshipId: id,
+                  pair1Names: [p1a.name, p1b.name],
+                  pair2Names: [p2a.name, p2b.name],
+                  pair1Nicknames: [p1a.nickname, p1b.nickname],
+                  pair2Nicknames: [p2a.nickname, p2b.nickname],
+                  pair1Avatars: [p1a.avatarUrl, p1b.avatarUrl],
+                  pair2Avatars: [p2a.avatarUrl, p2b.avatarUrl],
+                  isAdmin,
+                })
+              }
+            >
+              <Text style={styles.dashNextLabel}>{t('home.nextMatch')}</Text>
+              <View style={styles.dashNextTeams}>
+                <View style={styles.dashNextPair}>
+                  <View style={styles.dashNextAvatars}>
+                    <Avatar name={p1a.nickname ?? p1a.name} imageUrl={p1a.avatarUrl} size={32} />
+                    {!isSinglesMatch && <Avatar name={p1b.nickname ?? p1b.name} imageUrl={p1b.avatarUrl} size={32} />}
+                  </View>
+                  <Text style={styles.dashNextNames} numberOfLines={1}>
+                    {isSinglesMatch ? (p1a.nickname ?? p1a.name) : `${p1a.nickname ?? p1a.name} & ${p1b.nickname ?? p1b.name}`}
+                  </Text>
+                </View>
+                <Text style={styles.dashNextVs}>VS</Text>
+                <View style={styles.dashNextPair}>
+                  <View style={styles.dashNextAvatars}>
+                    <Avatar name={p2a.nickname ?? p2a.name} imageUrl={p2a.avatarUrl} size={32} />
+                    {!isSinglesMatch && <Avatar name={p2b.nickname ?? p2b.name} imageUrl={p2b.avatarUrl} size={32} />}
+                  </View>
+                  <Text style={styles.dashNextNames} numberOfLines={1}>
+                    {isSinglesMatch ? (p2a.nickname ?? p2a.name) : `${p2a.nickname ?? p2a.name} & ${p2b.nickname ?? p2b.name}`}
+                  </Text>
+                </View>
               </View>
-              {/* AC-003 — admin can remove players from active championship */}
-              {isAdmin && m.user_id !== user?.id && championship?.status !== 'finished' && (
-                <TouchableOpacity
-                  style={styles.removeBtn}
-                  onPress={() => handleRemoveMember(m)}
-                >
-                  <Text style={styles.removeBtnText}>✕</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+              <View style={styles.dashNextCta}>
+                <Text style={styles.dashNextCtaText}>{t('home.registerResult')}</Text>
+              </View>
+            </TouchableOpacity>
           );
-        })
-      )}
-    </ScrollView>
-  );
+        })()}
+
+      </ScrollView>
+    );
+  };
 
   // ── Build tab bar ─────────────────────────────────────────────────────────────
 
@@ -775,9 +912,9 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
   const tabDefs: TabDef[] = championship?.status === 'waiting'
     ? [{ key: 'waiting', label: t('championshipDetail.waitingRoom') }]
     : [
-        { key: 'matches',  label: t('championshipDetail.matchesTab')  },
-        { key: 'ranking',  label: t('championshipDetail.rankingTab')  },
-        { key: 'players',  label: t('championshipDetail.playersTab')  },
+        { key: 'dashboard', label: t('championshipDetail.dashboardTab') },
+        { key: 'matches',   label: t('championshipDetail.matchesTab')   },
+        { key: 'ranking',   label: t('championshipDetail.rankingTab')   },
       ];
 
   // ── Render ────────────────────────────────────────────────────────────────────
@@ -799,18 +936,14 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
         </TouchableOpacity>
         <View style={styles.headerInfo}>
           <Text style={styles.champName} numberOfLines={1}>{name}</Text>
-          {championship && (
-            <View style={[styles.statusBadge, { backgroundColor: STATUS_COLOR[championship.status] + '22' }]}>
-              <Text style={[styles.statusText, { color: STATUS_COLOR[championship.status] }]}>
-                {STATUS_LABEL[championship.status]}
-              </Text>
-            </View>
-          )}
         </View>
         <View style={styles.headerRight}>
-          <Text style={styles.playerCount}>
-            {acceptedMembers.length}/{championship?.max_players ?? '?'}
-          </Text>
+          <TouchableOpacity
+            style={styles.scoringHelpBtn}
+            onPress={() => setScoringVisible(true)}
+          >
+            <Text style={styles.scoringHelpText}>?</Text>
+          </TouchableOpacity>
           {/* AC-001/AC-002/CF-001 — admin menu */}
           {isAdmin && championship?.status !== 'finished' && (
             <TouchableOpacity style={styles.menuBtn} onPress={handleAdminMenu}>
@@ -847,10 +980,10 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
 
       {/* Tab content */}
       <View style={{ flex: 1 }}>
-        {activeTab === 'waiting'  && renderWaitingRoom()}
-        {activeTab === 'matches'  && renderMatchesTab()}
-        {activeTab === 'ranking'  && renderRankingTab()}
-        {activeTab === 'players'  && renderPlayersTab()}
+        {activeTab === 'waiting'   && renderWaitingRoom()}
+        {activeTab === 'dashboard' && renderDashboardTab()}
+        {activeTab === 'matches'   && renderMatchesTab()}
+        {activeTab === 'ranking'   && renderRankingTab()}
       </View>
 
       {/* ── RK-002: Player breakdown modal ── */}
@@ -941,6 +1074,8 @@ export default function ChampionshipDetailScreen({ navigation, route }: Props) {
           )}
         </TouchableOpacity>
       </Modal>
+
+      <ScoringTooltip visible={scoringVisible} onClose={() => setScoringVisible(false)} />
     </SafeAreaView>
   );
 }
@@ -1037,6 +1172,11 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   closedBadge:       { backgroundColor: 'rgba(76,175,80,0.15)', borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start' },
   closedBadgeText:   { fontSize: 10, color: '#4CAF50', fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
 
+  pendingConfirmBadge: { backgroundColor: 'rgba(245,166,35,0.15)', borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start' },
+  pendingConfirmText:  { fontSize: 10, color: colors.warning, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
+  disputedBadge:       { backgroundColor: 'rgba(255,107,107,0.15)', borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4, alignSelf: 'flex-start' },
+  disputedBadgeText:   { fontSize: 10, color: colors.error, fontWeight: '800', textTransform: 'uppercase', letterSpacing: 0.5 },
+
   pendingBadge:      { marginTop: 8, backgroundColor: colors.inputBg, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 5, alignSelf: 'flex-start' },
   pendingText:       { fontSize: 12, color: colors.textMuted },
   registerCta:       { marginTop: 10, backgroundColor: `rgba(${colors.accentRgb},0.1)`, borderRadius: radius.md, paddingVertical: 9, alignItems: 'center', borderWidth: 1, borderColor: `rgba(${colors.accentRgb},0.2)` },
@@ -1049,14 +1189,47 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   rankPosTop:        { color: colors.accent },
   rankInfo:          { flex: 1 },
   rankName:          { fontSize: 15, fontWeight: '700', color: colors.text },
+  rankFullName:      { fontSize: 12, color: colors.textDim, marginTop: 1 },
   rankSub:           { fontSize: 12, color: colors.textMuted, marginTop: 2 },
   rankPts:           { fontSize: 18, fontWeight: '800', color: colors.accent },
 
-  // Players tab
-  playerRow:         { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-  playerInfo:        { flex: 1 },
-  rosterName:        { fontSize: 15, fontWeight: '700', color: colors.text },
-  playerPts:         { fontSize: 13, color: colors.accent, fontWeight: '700', marginTop: 2 },
+  // Dashboard tab
+  dashHero:            { flexDirection: 'row', backgroundColor: colors.surface, borderRadius: radius.xl, padding: spacing.md, marginBottom: 14, borderWidth: 1, borderColor: colors.border, alignItems: 'center' },
+  dashRankCircle:      { flex: 1, alignItems: 'center', gap: 2 },
+  dashRankPos:         { fontSize: 22, fontWeight: '900', color: colors.text },
+  dashRankLabel:       { fontSize: 10, fontWeight: '600', color: colors.textMuted },
+  dashHeroDivider:     { width: 1, height: 36, backgroundColor: colors.border },
+  dashPtsBlock:        { flex: 1, alignItems: 'center', gap: 2 },
+  dashPtsValue:        { fontSize: 28, fontWeight: '900', color: colors.accent },
+  dashPtsLabel:        { fontSize: 10, fontWeight: '600', color: colors.textMuted },
+  dashWinRateBlock:    { flex: 1, alignItems: 'center', gap: 2 },
+  dashWinRateValue:    { fontSize: 22, fontWeight: '900', color: '#4CAF50' },
+  dashWinRateLabel:    { fontSize: 10, fontWeight: '600', color: colors.textMuted },
+  dashProgressCard:    { backgroundColor: colors.surface, borderRadius: radius.xl, padding: spacing.md, marginBottom: 14, borderWidth: 1, borderColor: colors.border },
+  dashProgressHeader:  { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  dashProgressLabel:   { fontSize: 12, fontWeight: '700', color: colors.textMuted },
+  dashProgressPct:     { fontSize: 12, fontWeight: '800', color: colors.accent },
+  dashProgressBar:     { height: 6, backgroundColor: colors.surface2, borderRadius: 3, overflow: 'hidden' as const },
+  dashProgressFill:    { height: '100%', backgroundColor: colors.accent, borderRadius: 3 },
+  dashStatsGrid:       { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  dashStatBox:         { flex: 1, backgroundColor: colors.surface, borderRadius: radius.lg, padding: 12, alignItems: 'center', gap: 4, borderWidth: 1, borderColor: colors.border },
+  dashStatValue:       { fontSize: 24, fontWeight: '900' },
+  dashStatLabel:       { fontSize: 10, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase' },
+  dashStatSub:         { fontSize: 9, color: colors.textFaint },
+  dashNextMatch:       { backgroundColor: colors.surface, borderRadius: radius.xl, padding: spacing.lg, marginBottom: 14, borderWidth: 1, borderColor: `rgba(${colors.accentRgb},0.25)` },
+  dashNextLabel:       { fontSize: 10, fontWeight: '800', color: colors.accent, letterSpacing: 1.5, marginBottom: 10 },
+  dashNextTeams:       { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 14 },
+  dashNextPair:        { flex: 1, alignItems: 'center', gap: 6 },
+  dashNextAvatars:     { flexDirection: 'row', gap: -6 },
+  dashNextNames:       { fontSize: 12, color: colors.text, fontWeight: '600', textAlign: 'center' },
+  dashNextVs:          { fontSize: 12, fontWeight: '800', color: colors.accent },
+  dashNextCta:         { backgroundColor: colors.accent, borderRadius: radius.md, paddingVertical: 10, alignItems: 'center' },
+  dashNextCtaText:     { fontSize: 13, fontWeight: '800', color: '#000' },
+  dashBreakdown:       { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: 4, borderWidth: 1, borderColor: colors.border },
+  dashBreakdownTitle:  { fontSize: 11, fontWeight: '700', color: colors.textMuted, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 },
+  dashBreakdownLine:   { fontSize: 13, color: colors.textDim },
+  dashBreakdownDivider:{ height: 1, backgroundColor: colors.border, marginVertical: 6 },
+  dashBreakdownTotal:  { fontSize: 14, fontWeight: '800', color: colors.text },
 
   // Avatar
   avatar:            { backgroundColor: colors.surface2, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border },
@@ -1100,4 +1273,7 @@ const createStyles = (colors: ThemeColors) => StyleSheet.create({
   breakdownLine:     { fontSize: 13, color: colors.textDim },
   breakdownDivider:  { height: 1, backgroundColor: colors.border, marginVertical: 6 },
   breakdownTotal:    { fontSize: 14, fontWeight: '800', color: colors.text },
+
+  scoringHelpBtn:  { width: 28, height: 28, borderRadius: 14, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.accent, alignItems: 'center', justifyContent: 'center', alignSelf: 'flex-end' },
+  scoringHelpText: { fontSize: 14, fontWeight: '700', color: colors.accent },
 });
